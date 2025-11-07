@@ -1,0 +1,23 @@
+---Host/Student info----
+
+Running on Fri Nov  7 05:02:01 PM EST 2025
+Run by ryan - () on host
+ Static hostname: generic-vm
+      Machine ID: ecf29c60426e499290e4e31be358e35d
+Operating System: Ubuntu 24.04.3 LTS
+a98742121b14ebe6350c4bf8245d0062  ./check-assign2-script.sh - a98742121b14ebe6350c4bf8245d0062  -
+------------------------
+
+---Start of Assignment2.sh Check------
+---Running makecontainers.sh----------
+This script performs many tasks. Please be patient
+To see more about what it is doing as it does it, use the --verbose option
+You may ignore any messages about Open vSwitch or dpkg-preconfigure being unable to re-open stdin
+DO NOT use control-Z when this script is running.
+Network lan deleted
+Network mgmt deleted
+Network lan created
+Network mgmt created
+Launching openwrt
+Retrieving image: Unpack: 100% (755.34MB/s)                                            Retrieving image: Unpack: 100% (755.34MB/s)                                            Launching server1
+Retrieving image: Unpack: 100% (1.08GB/s)                                          Retrieving image: Unpack: 100% (1.08GB/s)                                          
