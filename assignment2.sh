@@ -80,7 +80,7 @@ logMsg "Apache2 and Squid installed and running"
 logMsg "Starting user creation and SSH key setup"
 
 users=(dennis aubrey captain snibbles brownie scooter sandy perrier cindy tiger yoda)
-dennisExtraKey="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG4rT3vTt99Ox5kndS4HmgTrKBT8SKzhK4rhGkEVGlCI riken@generic-vm"
+dennisExtraKey="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG4rT3vTt99Ox5kndS4HmgTrKBT8SKzhK4rhGkEVGlCI student@generic-vm"
 
 templateDir="/root/ssh-templates"
 mkdir -p "$templateDir"
