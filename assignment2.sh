@@ -1,116 +1,130 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # assignment2.sh — COMP2137 Assignment 2: System Modification Script
-# Runs on server1
+# Runs on server1 or server2
 
 set -euo pipefail
 
+startTime=$(date +%s)
+
+logMsg() {
+    local msg="$1"
+    local elapsed=$(( $(date +%s) - startTime ))
+    printf "\n==> %s [Elapsed: %ss]\n" "$msg" "$elapsed"
+}
+
 # --- Ensure root ---
 if [[ $EUID -ne 0 ]]; then
-  echo "Re-execing as root via sudo..."
-  exec sudo -E bash "$0" "$@"
+    echo "Re-executing as root via sudo..."
+    exec sudo -E bash "$0" "$@"
 fi
 
-log(){ printf "\n==> %s\n" "$*"; }
+logMsg "Starting system configuration"
 
-# --- 1) Find the 192.168.16.x interface and set it to 192.168.16.21/24 via netplan ---
-log "Detecting interface on 192.168.16.0/24..."
-iface="$(ip -o -4 addr show | awk '$4 ~ /^192\.168\.16\./ {print $2; exit}')"
-[[ -n "${iface}" ]] || { echo "No 192.168.16.* interface found"; exit 1; }
-log "Interface is ${iface}"
+hostname=$(hostname)
+netplanDir="/etc/netplan"
+netplanFile="${netplanDir}/01-netcfg.yaml"
 
-# Pick the netplan file that defines this iface (fallback to first yaml)
-netplan_file="$(grep -rlE "^[[:space:]]*${iface}:" /etc/netplan || true)"
-[[ -n "${netplan_file}" ]] || netplan_file="$(ls -1 /etc/netplan/*.y*ml 2>/dev/null | head -n1)"
-[[ -n "${netplan_file}" ]] || { echo "No netplan file found"; exit 1; }
-log "Netplan file: ${netplan_file}"
+# Remove all existing Netplan configs
+rm -f "${netplanDir}"/*.yaml "${netplanDir}"/*.yml || true
 
-# Backup once
-[[ -f "${netplan_file}.bak.a2" ]] || cp -a "${netplan_file}" "${netplan_file}.bak.a2"
-
-# Replace any existing 192.168.16.* /24 under that iface with .21, or inject it if missing
-tmp="$(mktemp)"
-awk -v iface="$iface" '
-  BEGIN{ in_iface=0 }
-  {
-    if ($0 ~ "^[[:space:]]*"iface":") { in_iface=1; print; next }
-    if (in_iface && $0 ~ "^[[:space:]]*[a-z]") { in_iface=0 }
-    if (in_iface && $0 ~ /192\.168\.16\.[0-9]+\/24/) { gsub(/192\.168\.16\.[0-9]+\/24/, "192.168.16.21/24"); print; next }
-    print
-  }' "${netplan_file}" > "${tmp}"
-
-if ! awk -v iface="$iface" '
-  BEGIN{in_iface=0; found=0}
-  {
-    if ($0 ~ "^[[:space:]]*"iface":") in_iface=1
-    else if (in_iface && $0 ~ "^[[:space:]]*[a-z]") in_iface=0
-    if (in_iface && $0 ~ /192\.168\.16\.21\/24/) found=1
-  }
-  END{ exit found?0:1 }' "${tmp}"; then
-  awk -v iface="$iface" '
-    function indent(n){ s=""; for(i=0;i<n;i++) s=s" "; return s }
-    BEGIN{in_iface=0; lvl=0; done=0}
-    {
-      print
-      if ($0 ~ "^[[:space:]]*"iface":") { in_iface=1; lvl = match($0,/[^ ]/)-1 }
-      else if (in_iface && $0 ~ "^[[:space:]]*[a-z]") { if(!done){ print indent(lvl+2)"addresses: [192.168.16.21/24]"; done=1 } in_iface=0 }
-      else if (in_iface && $0 ~ /^[[:space:]]*addresses:/) {
-        if ($0 ~ /\[/) { if ($0 !~ /192\.168\.16\.21\/24/) sub(/\]$/, ", 192.168.16.21/24]") }
-        else { print gensub(/^[[:space:]]*/,"&- 192.168.16.21/24",1) }
-        done=1
-      }
-    }
-    END{ if (in_iface && !done) print indent(lvl+2)"addresses: [192.168.16.21/24]" }' "${tmp}" > "${tmp}.2"
-  mv "${tmp}.2" "${tmp}"
+# Assign IPs based on hostname
+if [[ "$hostname" == "server1" ]]; then
+    eth0Ip="192.168.16.21/24"
+    eth1Ip="172.16.1.241/24"
+elif [[ "$hostname" == "server2" ]]; then
+    eth0Ip="192.168.16.21/24"
+    eth1Ip="172.16.1.242/24"
+else
+    echo "Unknown server hostname: $hostname"
+    exit 1
 fi
 
-install -m 0644 "${tmp}" "${netplan_file}"; rm -f "${tmp}"
-log "Applying netplan..."
+# Write Netplan config
+cat > "$netplanFile" <<EOF
+network:
+    version: 2
+    ethernets:
+        eth0:
+            addresses: [$eth0Ip]
+            routes:
+              - to: default
+                via: 192.168.16.2
+            nameservers:
+                addresses: [192.168.16.2]
+                search: [home.arpa, localdomain]
+        eth1:
+            addresses: [$eth1Ip]
+EOF
+
+chmod 0644 "$netplanFile"
+logMsg "Netplan configuration written"
+
 netplan apply
+logMsg "Netplan applied"
 
-# --- 2) /etc/hosts: server1 -> 192.168.16.21 (remove old server1 lines on 192.168.16.*) ---
-log "Updating /etc/hosts for server1..."
-cp -a /etc/hosts /etc/hosts.bak.a2 || true
-grep -vE '^192\.168\.16\.[0-9]+\s+server1(\s|$)' /etc/hosts > /etc/hosts.new
-grep -qE '^192\.168\.16\.21\s+server1(\s|$)' /etc/hosts.new || echo "192.168.16.21 server1" >> /etc/hosts.new
-install -m 0644 /etc/hosts.new /etc/hosts && rm -f /etc/hosts.new
+# Update /etc/hosts
+eth0IpNoMask="${eth0Ip%/*}"
+sed -i -E "/\s+$hostname$/d" /etc/hosts
+echo "$eth0IpNoMask $hostname" >> /etc/hosts
+logMsg "/etc/hosts updated ($eth0IpNoMask $hostname)"
 
-# --- 3) Software: apache2 + squid, enabled and running ---
-log "Installing apache2 and squid..."
+# Install software
+logMsg "Installing Apache2 and Squid"
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -y
-apt-get install -y apache2 squid
-systemctl enable --now apache2
-systemctl enable --now squid
+apt-get update -qq
+apt-get install -y -qq apache2 squid
+systemctl enable --now apache2 squid
+logMsg "Apache2 and Squid installed and running"
 
-# --- 4) Users + SSH keys ---
-log "Creating users and SSH keys..."
+# --- Create users and SSH keys ---
+logMsg "Starting user creation and SSH key setup"
+
 users=(dennis aubrey captain snibbles brownie scooter sandy perrier cindy tiger yoda)
+dennisExtraKey="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG4rT3vTt99Ox5kndS4HmgTrKBT8SKzhK4rhGkEVGlCI riken@generic-vm"
 
-ensure_user() {
-  local u="$1"
-  id "$u" &>/dev/null || useradd -m -s /bin/bash "$u"
-}
-ensure_keys() {
-  local u="$1"
-  local home; home="$(getent passwd "$u" | cut -d: -f6)"
-  local sshd="${home}/.ssh"
-  install -d -m 700 -o "$u" -g "$u" "$sshd"
-  [[ -f "${sshd}/id_rsa"      ]] || sudo -u "$u" ssh-keygen -t rsa -b 4096 -N "" -f "${sshd}/id_rsa" >/dev/null
-  [[ -f "${sshd}/id_ed25519" ]] || sudo -u "$u" ssh-keygen -t ed25519 -N "" -f "${sshd}/id_ed25519" >/dev/null
-  {
-    cat "${sshd}/id_rsa.pub"
-    cat "${sshd}/id_ed25519.pub"
-    if [[ "$u" == "dennis" ]]; then
-      echo 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG4rT3vTt99Ox5kndS4HmgTrKBT8SKzhK4rhGkEVGlCI student@generic-vm'
-    fi
-  } | sort -u > "${sshd}/authorized_keys"
-  chown "$u:$u" "${sshd}/authorized_keys"; chmod 600 "${sshd}/authorized_keys"
-  [[ "$u" == "dennis" ]] && usermod -aG sudo dennis || true
-}
-for u in "${users[@]}"; do
-  ensure_user "$u"
-  ensure_keys "$u"
+templateDir="/root/ssh-templates"
+mkdir -p "$templateDir"
+[[ ! -f "$templateDir/id_rsa" ]] && ssh-keygen -t rsa -b 4096 -N '' -f "$templateDir/id_rsa" -q </dev/null
+[[ ! -f "$templateDir/id_ed25519" ]] && ssh-keygen -t ed25519 -N '' -f "$templateDir/id_ed25519" -q </dev/null
+
+for user in "${users[@]}"; do
+    {
+        # Create user if missing
+        if ! id "$user" &>/dev/null; then
+            if [[ "$user" == "dennis" ]]; then
+                useradd -m -s /bin/bash -G sudo "$user" || true
+            else
+                useradd -m -s /bin/bash "$user" || true
+            fi
+            logMsg "User '$user' created"
+        fi
+
+        homeDir="$(getent passwd "$user" | cut -d: -f6)"
+        sshDir="$homeDir/.ssh"
+        mkdir -p "$sshDir"
+        chmod 700 "$sshDir"
+        chown "$user:$user" "$sshDir"
+
+        # Copy keys safely
+        for key in id_rsa id_ed25519; do
+            cp -n "$templateDir/$key" "$sshDir/$key" 2>/dev/null || true
+            cp -n "$templateDir/$key.pub" "$sshDir/$key.pub" 2>/dev/null || true
+        done
+
+        # authorized_keys
+        {
+            cat "$sshDir/id_rsa.pub"
+            cat "$sshDir/id_ed25519.pub"
+            [[ "$user" == "dennis" ]] && echo "$dennisExtraKey"
+        } | sort -u > "$sshDir/authorized_keys"
+
+        chmod 600 "$sshDir/authorized_keys"
+        chown "$user:$user" "$sshDir/authorized_keys"
+
+        logMsg "SSH keys configured for '$user'"
+    } || logMsg "Warning: failed configuring user '$user', continuing..."
 done
 
-log "Done."
-echo "Interface ${iface} -> 192.168.16.21/24; hosts updated; apache2 & squid running; users + keys created; dennis has sudo."
+logMsg "All users and SSH keys have been successfully created."
+
+logMsg "System configuration completed successfully"
