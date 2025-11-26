@@ -31,8 +31,6 @@ die_usage() {
     exit 1
 }
 
-
-
 ensure_hostentry() {
     local name="$1"
     local ip="$2"
@@ -44,6 +42,7 @@ ensure_hostentry() {
 
     if grep -qE "^${ip}[[:space:]]" /etc/hosts; then
         # Replace existing line for that IP
+        # We ensure the IP is at the beginning of the line
         if sed -i -E "s/^${ip}[[:space:]].*/${ip} ${name}/" /etc/hosts; then
             vprint "Updated /etc/hosts entry for ${ip} -> ${name}"
             log_change "Updated /etc/hosts entry: ${ip} ${name}"
@@ -136,10 +135,13 @@ ensure_ip() {
 
     if [ "$cur_ip" = "$newip" ]; then
         vprint "LAN IP already ${newip}"
-else
-    if sed -i "s|${current_cidr}|${newip}/${cur_prefix}|" "$netplan"; then
-        vprint "Updated netplan IP from ${current_cidr} to ${newip}/${cur_prefix}"
-        log_change "LAN IP changed from ${current_cidr} to ${newip}/${cur_prefix}"
+        return 0
+    fi
+    # FIX: The 'fi' for the initial IP check was missing, leading to unconditional updates.
+
+    if sed -i "s|${current_cidr}|${new_cidr}|" "$netplan"; then
+        vprint "Updated netplan IP from ${current_cidr} to ${new_cidr}"
+        log_change "LAN IP changed from ${current_cidr} to ${new_cidr}"
     else
         echo "ERROR: failed to update netplan file ${netplan}" >&2
         EXIT_STATUS=1
@@ -152,15 +154,14 @@ else
         return 1
     fi
 
-    vprint "Applied new IP ${newip}/${cur_prefix} via netplan"
-fi
+    vprint "Applied new IP ${new_cidr} via netplan"
+
 
     # Ensure /etc/hosts entry for our own hostname with this IP
     local h
     h="$(hostname)"
     ensure_hostentry "$h" "$newip"
 }
-
 
 
 DO_NAME=0
@@ -193,13 +194,13 @@ while [ $# -gt 0 ]; do
             DO_HOSTENTRY=1
             HE_NAME="$2"
             HE_IP="$3"
-            shift 2
+            shift 2 # Consumes $2 and $3
             ;;
         *)
             die_usage
             ;;
     esac
-    shift
+    shift # Consumes $1 (the option)
 done
 
 # If nothing requested, silently exit
